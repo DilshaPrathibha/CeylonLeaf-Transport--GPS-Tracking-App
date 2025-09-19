@@ -1,35 +1,62 @@
 package com.example.ceylonleaftransport
 
 import android.Manifest
-import android.app.AlertDialog
-import android.content.Context
-import android.content.Intent
+import android.content.*
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.IBinder
 import android.os.PowerManager
 import android.provider.Settings
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.example.ceylonleaftransport.ui.theme.CeylonLeafTransportTheme
+import okhttp3.*
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
+import java.io.IOException
+import java.util.*
 
 class MainActivity : ComponentActivity() {
+    private val TAG = "MainActivity"
+    private var isTracking by mutableStateOf(false)
+    private val serviceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+            val binder = service as TrackingService.LocalBinder
+            isTracking = true
+            Log.d(TAG, "Service connected")
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            isTracking = false
+            Log.d(TAG, "Service disconnected")
+        }
+    }
+
     private val requiredPermissions = mutableListOf(
         Manifest.permission.ACCESS_FINE_LOCATION,
-        Manifest.permission.ACCESS_COARSE_LOCATION
+        Manifest.permission.ACCESS_COARSE_LOCATION,
+        Manifest.permission.FOREGROUND_SERVICE
     ).apply {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             add(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
@@ -42,8 +69,11 @@ class MainActivity : ComponentActivity() {
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        // If all permissions are granted, we don't need to do anything here
-        // as the tracking will start when the user clicks the button
+        val allGranted = permissions.entries.all { it.value }
+        if (allGranted) {
+            startTrackingService()
+            promptForBatteryOptimization()
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -54,20 +84,87 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    TrackingScreen(
-                        onStartTracking = { vehicleId, token ->
-                            startTracking(vehicleId, token)
-                        },
-                        onStopTracking = {
-                            stopTracking()
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        // Status Text
+                        Text(
+                            text = if (isTracking) "Status: Running" else "Status: Stopped",
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isTracking) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(bottom = 32.dp)
+                        )
+                        
+                        // Buttons
+                        Button(
+                            onClick = { 
+                                if (!isTracking) startTracking() 
+                                else stopTracking()
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(60.dp)
+                        ) {
+                            Text(if (isTracking) "STOP" else "START", fontSize = 18.sp)
                         }
-                    )
+                    }
                 }
             }
         }
+    }
 
-        // Request permissions when activity is created
-        requestPermissions()
+    private fun startTracking() {
+        if (checkLocationPermission()) {
+            startTrackingService()
+            promptForBatteryOptimization()
+        } else {
+            requestPermissions()
+        }
+    }
+
+    private fun startTrackingService() {
+        try {
+            val serviceIntent = Intent(this, TrackingService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent)
+            } else {
+                startService(serviceIntent)
+            }
+            // Bind to the service
+            bindService(
+                serviceIntent,
+                serviceConnection,
+                Context.BIND_AUTO_CREATE
+            )
+            isTracking = true
+            Log.d(TAG, "Tracking service started and bound")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start tracking service", e)
+        }
+    }
+
+    private fun stopTracking() {
+        try {
+            unbindService(serviceConnection)
+            val serviceIntent = Intent(this, TrackingService::class.java)
+            stopService(serviceIntent)
+            isTracking = false
+            Log.d(TAG, "Tracking service stopped and unbound")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to stop tracking service", e)
+        }
+    }
+
+
+    private fun checkLocationPermission(): Boolean {
+        return requiredPermissions.all {
+            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+        }
     }
 
     private fun requestPermissions() {
@@ -77,70 +174,44 @@ class MainActivity : ComponentActivity() {
 
         if (permissionsToRequest.isNotEmpty()) {
             requestPermissionLauncher.launch(permissionsToRequest)
-        }
-    }
-
-    private fun startTracking(vehicleId: String, token: String) {
-        if (checkLocationPermission()) {
-            // Start the tracking service
-            val serviceIntent = Intent(this, TrackingService::class.java).apply {
-                putExtra("vehicleId", vehicleId.ifEmpty { BuildConfig.TRACK_DEFAULT_VEHICLE })
-                putExtra("token", token)
-            }
-            
-            // Open the map activity
-            val mapIntent = Intent(this, MapActivity::class.java).apply {
-                putExtra("vehicleId", vehicleId.ifEmpty { BuildConfig.TRACK_DEFAULT_VEHICLE })
-            }
-            
-            // Start both the service and the map activity
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(serviceIntent)
-            } else {
-                startService(serviceIntent)
-            }
-            startActivity(mapIntent)
+        } else {
+            startTrackingService()
             promptForBatteryOptimization()
         }
-    }
-
-    private fun checkLocationPermission(): Boolean {
-        return ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
     }
 
     private fun promptForBatteryOptimization() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             val powerManager = getSystemService(POWER_SERVICE) as PowerManager
+            val packageName = packageName
             if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
-                showBatteryOptimizationDialog()
+                try {
+                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = Uri.parse("package:$packageName")
+                    }
+                    startActivity(intent)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to show battery optimization settings", e)
+                }
             }
         }
     }
-    
-    private fun showBatteryOptimizationDialog() {
-        AlertDialog.Builder(this)
-            .setTitle("Battery Optimization")
-            .setMessage("For reliable tracking, please disable battery optimizations for this app.\n\n" +
-                    "Note: Some devices (Xiaomi/Oppo/Vivo/others) may require additional manual settings in their battery optimization settings.")
-            .setPositiveButton("Open Settings") { _, _ ->
-                openBatteryOptimizationSettings()
-            }
-            .setNegativeButton("Later", null)
-            .show()
-    }
-    
-    private fun openBatteryOptimizationSettings() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                data = Uri.parse("package:$packageName")
-            }
-            startActivity(intent)
-        }
-    }
+}
 
-    private fun stopTracking() {
-        val intent = Intent(this, TrackingService::class.java)
-        stopService(intent)
+@OptIn(ExperimentalMaterial3Api::class)
+@Preview(showBackground = true)
+@Composable
+fun MainActivityPreview() {
+    CeylonLeafTransportTheme {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background
+        ) {
+            TrackingScreen(
+                onStartTracking = { _, _ -> },
+                onStopTracking = {}
+            )
+        }
     }
 }
 
@@ -150,7 +221,7 @@ fun TrackingScreen(
     onStartTracking: (String, String) -> Unit,
     onStopTracking: () -> Unit
 ) {
-    var vehicleId by remember { mutableStateOf(TextFieldValue(BuildConfig.TRACK_DEFAULT_VEHICLE)) }
+    var vehicleId by remember { mutableStateOf(TextFieldValue("DRIVER")) }
     var token by remember { mutableStateOf(TextFieldValue("")) }
     var isTracking by remember { mutableStateOf(false) }
     val context = LocalContext.current

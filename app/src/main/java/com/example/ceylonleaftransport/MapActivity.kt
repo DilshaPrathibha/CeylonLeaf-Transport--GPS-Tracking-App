@@ -19,7 +19,7 @@ class MapActivity : ComponentActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val vehicleId = intent.getStringExtra("vehicleId") ?: BuildConfig.TRACK_DEFAULT_VEHICLE
+        val vehicleId = intent.getStringExtra("vehicleId") ?: "DRIVER"
         
         setContent {
             CeylonLeafTransportTheme {

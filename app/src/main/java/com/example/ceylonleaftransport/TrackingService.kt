@@ -6,183 +6,141 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.location.Location
+import android.os.Binder
 import android.os.Build
 import android.os.IBinder
-import android.os.Looper
+import android.util.Log
 import androidx.core.app.NotificationCompat
-import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
-import com.google.android.gms.location.LocationRequest.PRIORITY_HIGH_ACCURACY
 import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
-import okhttp3.Call
-import okhttp3.Callback
+import com.google.android.gms.location.Priority
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import okhttp3.Response
+import okhttp3.logging.HttpLoggingInterceptor
 import org.json.JSONObject
+import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 class TrackingService : Service() {
-    private lateinit var fusedLocationClient: FusedLocationProviderClient
-    private lateinit var httpClient: OkHttpClient
-    private var vehicleId: String = BuildConfig.TRACK_DEFAULT_VEHICLE
-    private var token: String = ""
-    private val baseUrl = BuildConfig.TRACK_BASE_URL
-    
-    private val locationCallback = object : LocationCallback() {
-        override fun onLocationResult(locationResult: LocationResult) {
-            locationResult.lastLocation?.let { location ->
-                sendLocationUpdate(location.latitude, location.longitude)
-            }
-        }
+    private val binder = LocalBinder()
+
+    inner class LocalBinder : Binder() {
+        fun getService(): TrackingService = this@TrackingService
     }
 
-    override fun onBind(intent: Intent?): IBinder? = null
-
-    override fun onCreate() {
-        super.onCreate()
-        
-        // Create notification channel
-        createNotificationChannel()
-        
-        // Initialize location client and HTTP client
-        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
-        httpClient = OkHttpClient.Builder()
-            .connectTimeout(10, TimeUnit.SECONDS)
-            .writeTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
-            .build()
-    }
-
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Get vehicle ID and token from intent (use defaults if not provided)
-        intent?.let {
-            vehicleId = it.getStringExtra("vehicleId") ?: BuildConfig.TRACK_DEFAULT_VEHICLE
-            token = it.getStringExtra("token") ?: ""
-        }
-
-        try {
-            // Start foreground service with notification
-            startForeground(NOTIFICATION_ID, buildNotification("Tracking active"))
-            
-            // Request location updates
-            startLocationUpdates()
-        } catch (e: SecurityException) {
-            stopSelf()
-        }
-
-        return START_STICKY
-    }
-
-    private fun startLocationUpdates() {
-        val locationRequest = LocationRequest.Builder(PRIORITY_HIGH_ACCURACY, 4000)
-            .setMinUpdateIntervalMillis(2000)
-            .setMinUpdateDistanceMeters(5f)
-            .build()
-
-        try {
-            fusedLocationClient.requestLocationUpdates(
-                locationRequest,
-                locationCallback,
-                Looper.getMainLooper()
-            )
-        } catch (e: SecurityException) {
-            stopSelf()
-        }
-    }
-
-    private fun sendLocationUpdate(lat: Double, lng: Double) {
-        try {
-            val url = "$baseUrl/api/vehicles/$vehicleId/location"
-            val json = JSONObject().apply {
-                put("lat", lat)
-                put("lng", lng)
-                put("timestamp", System.currentTimeMillis())
-            }.toString()
-            
-            val requestBody = json.toRequestBody("application/json".toMediaType())
-            val request = Request.Builder()
-                .url(url)
-                .post(requestBody)
-                .header("Content-Type", "application/json")
-                .apply {
-                    if (token.isNotBlank()) {
-                        addHeader("Authorization", "Bearer $token")
-                    }
-                }
-                .build()
-
-            httpClient.newCall(request).enqueue(object : Callback {
-                override fun onFailure(call: Call, e: java.io.IOException) {
-                    // Log error and retry after delay
-                    android.util.Log.e("TrackingService", "Failed to send location update", e)
-                    // You could add retry logic here
-                }
-
-                override fun onResponse(call: Call, response: Response) {
-                    if (!response.isSuccessful) {
-                        android.util.Log.e("TrackingService", "Failed to send location update: ${response.code} - ${response.message}")
-                    }
-                    response.close()
-                }
-            })
-        } catch (e: Exception) {
-            android.util.Log.e("TrackingService", "Error in sendLocationUpdate", e)
-        }
-    }
-
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "Vehicle Tracking",
-                NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "Shows ongoing vehicle tracking notification"
-            }
-
-            val notificationManager = getSystemService(NotificationManager::class.java)
-            notificationManager.createNotificationChannel(channel)
-        }
-    }
-
-    private fun buildNotification(text: String): Notification {
-        return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Vehicle Tracking")
-            .setContentText(text)
-            .setSmallIcon(android.R.drawable.ic_dialog_map)
-            .setOngoing(true)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .build()
-    }
-
-    override fun onDestroy() {
-        try {
-            fusedLocationClient.removeLocationUpdates(locationCallback)
-        } catch (e: Exception) {
-            // Ignore if already unregistered
-        }
-        httpClient.dispatcher.executorService.shutdown()
-        super.onDestroy()
-    }
 
     companion object {
         private const val CHANNEL_ID = "track"
-        private const val NOTIFICATION_ID = 1
+        private const val NOTIF_ID = 1
+        private const val BASE = "https://bethel-untattooed-madlyn.ngrok-free.app"
+        private const val DRIVER = "DRIVER"
+        private const val TAG = "Tracker"
+    }
 
-        fun buildNotification(context: Context): Notification {
-            return NotificationCompat.Builder(context, CHANNEL_ID)
-                .setContentTitle("Vehicle Tracking")
-                .setContentText("Vehicle tracking in progress...")
-                .setSmallIcon(android.R.drawable.ic_dialog_map)
-                .setOngoing(true)
-                .setPriority(NotificationCompat.PRIORITY_LOW)
-                .build()
+    private val http: OkHttpClient by lazy {
+        val log = HttpLoggingInterceptor { m -> Log.d(TAG, m) }.apply {
+            level = HttpLoggingInterceptor.Level.BASIC
         }
+        OkHttpClient.Builder()
+            .addInterceptor(log)
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(10, TimeUnit.SECONDS)
+            .writeTimeout(10, TimeUnit.SECONDS)
+            .build()
+    }
+
+    private val fused by lazy { LocationServices.getFusedLocationProviderClient(this) }
+    private lateinit var request: LocationRequest
+    private var callback: LocationCallback? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        createChannel()
+        startForeground(NOTIF_ID, makeNotification("Tracking active"))
+
+        request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 4000L)
+            .setMinUpdateIntervalMillis(2000L)
+            .setMinUpdateDistanceMeters(5f)
+            .build()
+
+        // One warm-up GET so ngrok never shows a browser splash for our client
+        warmUpNgrok()
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (callback == null) {
+            callback = object : LocationCallback() {
+                override fun onLocationResult(result: LocationResult) {
+                    val loc = result.lastLocation ?: return
+                    sendLocation(loc.latitude, loc.longitude)
+                }
+            }
+            fused.requestLocationUpdates(request, callback as LocationCallback, mainLooper)
+        }
+        return START_STICKY
+    }
+
+    private fun warmUpNgrok() {
+        val req = Request.Builder()
+            .url("$BASE/driver-location.html")
+            .header("ngrok-skip-browser-warning", "true")
+            .header("User-Agent", "Android")
+            .build()
+        http.newCall(req).enqueue(object : okhttp3.Callback {
+            override fun onFailure(call: okhttp3.Call, e: IOException) { Log.w(TAG, "warmup fail", e) }
+            override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) { response.close() }
+        })
+    }
+
+    private fun sendLocation(lat: Double, lng: Double) {
+        val json = JSONObject(mapOf("lat" to lat, "lng" to lng)).toString()
+        val body = json.toRequestBody("application/json".toMediaType())
+
+        val req = Request.Builder()
+            .url("$BASE/api/vehicles/$DRIVER/location")
+            .post(body)
+            .header("Content-Type", "application/json")
+            .header("ngrok-skip-browser-warning", "true")
+            .build()
+
+        http.newCall(req).enqueue(object : okhttp3.Callback {
+            override fun onFailure(call: okhttp3.Call, e: IOException) {
+                Log.e(TAG, "POST failed", e)
+            }
+            override fun onResponse(call: okhttp3.Call, res: okhttp3.Response) {
+                Log.d(TAG, "POST ${res.code}")
+                res.close()
+            }
+        })
+    }
+
+    private fun createChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            val ch = NotificationChannel(CHANNEL_ID, "Tracking", NotificationManager.IMPORTANCE_LOW)
+            mgr.createNotificationChannel(ch)
+        }
+    }
+
+    private fun makeNotification(text: String): Notification =
+        NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+            .setContentTitle("CeylonLeaf tracking")
+            .setContentText(text)
+            .setOngoing(true)
+            .build()
+
+    override fun onDestroy() {
+        callback?.let { fused.removeLocationUpdates(it) }
+        callback = null
+        super.onDestroy()
+    }
+
+    override fun onBind(intent: Intent): IBinder {
+        return binder
     }
 }

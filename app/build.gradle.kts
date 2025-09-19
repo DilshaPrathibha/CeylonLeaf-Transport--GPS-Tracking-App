@@ -18,7 +18,7 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         
         buildConfigField("String", "TRACK_BASE_URL", "\"https://bethel-untattooed-madlyn.ngrok-free.app\"")
-        buildConfigField("String", "TRACK_DEFAULT_VEHICLE", "\"TRUCK-1\"")
+        buildConfigField("String", "DRIVER_ID", "\"DRIVER\"")
         
         buildFeatures {
             buildConfig = true
@@ -73,7 +73,8 @@ dependencies {
     
     // Location and Networking
     implementation("com.google.android.gms:play-services-location:21.2.0")
-    implementation(libs.okhttp)
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
     
     // WebView
     implementation("androidx.webkit:webkit:1.8.0")
