@@ -1,21 +1,13 @@
 package com.example.ceylonleaftransport
 
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.Service
+import android.app.*
 import android.content.Context
 import android.content.Intent
-import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import com.google.android.gms.location.LocationCallback
-import com.google.android.gms.location.LocationRequest
-import com.google.android.gms.location.LocationResult
-import com.google.android.gms.location.LocationServices
-import com.google.android.gms.location.Priority
+import com.google.android.gms.location.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -26,12 +18,6 @@ import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 class TrackingService : Service() {
-    private val binder = LocalBinder()
-
-    inner class LocalBinder : Binder() {
-        fun getService(): TrackingService = this@TrackingService
-    }
-
 
     companion object {
         private const val CHANNEL_ID = "track"
@@ -42,9 +28,8 @@ class TrackingService : Service() {
     }
 
     private val http: OkHttpClient by lazy {
-        val log = HttpLoggingInterceptor { m -> Log.d(TAG, m) }.apply {
-            level = HttpLoggingInterceptor.Level.BASIC
-        }
+        val log = HttpLoggingInterceptor { m -> Log.d(TAG, m) }
+            .apply { level = HttpLoggingInterceptor.Level.BASIC }
         OkHttpClient.Builder()
             .addInterceptor(log)
             .connectTimeout(10, TimeUnit.SECONDS)
@@ -60,14 +45,14 @@ class TrackingService : Service() {
     override fun onCreate() {
         super.onCreate()
         createChannel()
-        startForeground(NOTIF_ID, makeNotification("Tracking active"))
+        startForeground(NOTIF_ID, notif("Tracking active"))
 
         request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 4000L)
             .setMinUpdateIntervalMillis(2000L)
             .setMinUpdateDistanceMeters(5f)
             .build()
 
-        // One warm-up GET so ngrok never shows a browser splash for our client
+        // Warm-up GET; and bypass ngrok splash for API calls via header later
         warmUpNgrok()
     }
 
@@ -126,7 +111,7 @@ class TrackingService : Service() {
         }
     }
 
-    private fun makeNotification(text: String): Notification =
+    private fun notif(text: String): Notification =
         NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_mylocation)
             .setContentTitle("CeylonLeaf tracking")
@@ -140,7 +125,5 @@ class TrackingService : Service() {
         super.onDestroy()
     }
 
-    override fun onBind(intent: Intent): IBinder {
-        return binder
-    }
+    override fun onBind(intent: Intent?): IBinder? = null
 }
